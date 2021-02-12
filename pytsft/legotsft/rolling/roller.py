@@ -22,25 +22,25 @@ class Roller(BaseProcessUnit):
         self.input_type = set(["dataframe", "ndarray"])
         self.output_type = set(["ndarray"])
         mod = SourceModule("""
-            __global__ void cuda_rolling(float *dest_x, float *dest_y, float *x, int lookback, int horizon, int length)
+            __global__ void cuda_rolling(float *dest_x, float *dest_y, float *x, int lookback, int horizon, int length, int overset)
             {
                 int block_idx = blockIdx.x;
                 int idx = threadIdx.x + block_idx*blockDim.x;
-                int idx_x = idx * lookback;
-                int idx_y = idx * horizon;
+                int idx_x = idx * lookback * overset;
+                int idx_y = idx * horizon * overset;
                 
                 if (idx+lookback+horizon-1 >= length){
                     return;
                 }
 
                 // dest_x
-                for (int i=0; i<=lookback-1; i++){
-                    dest_x[idx_x+i] = x[threadIdx.x+i+block_idx*blockDim.x];
+                for (int i=0; i<=(lookback-1)*overset; i+=overset){
+                    memcpy(&dest_x[idx_x+i], &x[idx*overset + i], sizeof(float)*overset);
                 }
 
                 // dest_y
-                for (int i=0; i<=horizon-1; i++){
-                    dest_y[idx_y+i] = x[threadIdx.x+i+lookback+block_idx*blockDim.x];
+                for (int i=0; i<=(horizon-1)*overset; i+=overset){
+                    memcpy(&dest_y[idx_y+i], &x[idx*overset+i+lookback*overset], sizeof(float)*overset);
                 }
             }
         """)
@@ -54,8 +54,8 @@ class Roller(BaseProcessUnit):
         return out_x, out_y
 
     def _cuda_rolling(self, x, axis=0):
-        dest_x = np.zeros((x.shape[0]-self.config["lookback"]-self.config["horizon"]+1,self.config["lookback"])).astype(np.float32)
-        dest_y = np.zeros((x.shape[0]-self.config["lookback"]-self.config["horizon"]+1,self.config["horizon"])).astype(np.float32)
+        dest_x = np.zeros((x.shape[0]-self.config["lookback"]-self.config["horizon"]+1,self.config["lookback"]) + x.shape[1:]).astype(np.float32)
+        dest_y = np.zeros((x.shape[0]-self.config["lookback"]-self.config["horizon"]+1,self.config["horizon"]) + x.shape[1:]).astype(np.float32)
         self._cuda_rolling_kernal(
             cuda.Out(dest_x), 
             cuda.Out(dest_y), 
@@ -63,20 +63,21 @@ class Roller(BaseProcessUnit):
             np.int32(self.config["lookback"]), 
             np.int32(self.config["horizon"]),
             np.int32(x.shape[0]),
+            np.int32(np.prod(x.shape[1:])),
             block=(LIMIT_THREAD_PER_BLOCK,1,1),
             grid=(math.ceil(x.shape[0]/LIMIT_THREAD_PER_BLOCK),1)
         )
         return dest_x, dest_y
 
-    def forward(self, x, backend="cpu"):
+    def forward(self, x, backend="cpu", axis=0):
         if backend == "cpu":
-            return self._rolling(x)
+            return self._rolling(x, axis=axis)
         if backend == "cuda":
             return self._cuda_rolling(x)
 
 if __name__ == "__main__":
-    x = np.arange(807340).astype(np.float32)
-    roller = Roller(lookback=5, horizon=1)
+    x = np.random.rand(1000).astype(np.float32)
+    roller = Roller(lookback=320, horizon=40)
     start_time = time.time()
     out_x, out_y = roller.forward(x, backend="cuda")
     print("It takes {} seconds for gpu".format(time.time() - start_time))
