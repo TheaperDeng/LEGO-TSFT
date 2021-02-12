@@ -76,7 +76,7 @@ class Roller(BaseProcessUnit):
             return self._cuda_rolling(x)
 
 if __name__ == "__main__":
-    x = np.random.rand(1000).astype(np.float32)
+    x = np.random.rand(100000, 2).astype(np.float32)
     roller = Roller(lookback=320, horizon=40)
     start_time = time.time()
     out_x, out_y = roller.forward(x, backend="cuda")
