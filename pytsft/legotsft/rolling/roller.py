@@ -29,7 +29,7 @@ class Roller(BaseProcessUnit):
                 int idx_x = idx * lookback;
                 int idx_y = idx * horizon;
                 
-                if (idx >= length){
+                if (idx+lookback+horizon-1 >= length){
                     return;
                 }
 
@@ -40,7 +40,7 @@ class Roller(BaseProcessUnit):
 
                 // dest_y
                 for (int i=0; i<=horizon-1; i++){
-                    dest_y[idx_y+i] = x[threadIdx.x+i+lookback+ block_idx*blockDim.x];
+                    dest_y[idx_y+i] = x[threadIdx.x+i+lookback+block_idx*blockDim.x];
                 }
             }
         """)
