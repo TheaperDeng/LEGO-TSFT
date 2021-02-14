@@ -3,6 +3,7 @@
 
 from legotsft import BaseProcessUnit
 import numpy as np
+import pandas as pd
 
 import pycuda.autoinit
 import pycuda.driver as cuda
@@ -18,11 +19,17 @@ class Roller(BaseProcessUnit):
     def __init__(self, lookback, horizon, **config):
         super().__init__()
         self.config = {"lookback": lookback,
-                       "horizon": horizon}
+                       "horizon": horizon,
+                       "backend": "cpu"}
+        self.config.update(config)
         self.input_type = set(["ndarray"])
         self.output_type = set(["ndarray"])
+        self._pre_processing = True
+        self._post_processing = False
+        self._input_layer = False
+
         mod = SourceModule("""
-            __global__ void cuda_rolling(float *dest_x, float *dest_y, float *x, int lookback, int horizon, int length, int overset, int* target_dim, int target_dim_length)
+            __global__ void cuda_rolling(float *dest_x, float *dest_y, float *x, int lookback, int horizon, int length, int overset, int* target_dim, int target_dim_length, int step_x, int step_y)
             {
                 int block_idx = blockIdx.x;
                 int idx = threadIdx.x + block_idx*blockDim.x;
@@ -63,6 +70,9 @@ class Roller(BaseProcessUnit):
         dest_x = np.zeros((x.shape[0]-self.config["lookback"]-self.config["horizon"]+1,self.config["lookback"]) + tuple([x.shape[1]])).astype(np.float32)
         dest_y = np.zeros((x.shape[0]-self.config["lookback"]-self.config["horizon"]+1,self.config["horizon"]) + tuple([target_dim_length])).astype(np.float32)
         target_dim = np.array(target_dim).astype(np.int32)
+        step_x, step_y = x.strides
+        step_x = step_x//4
+        step_y = step_y//4
         self._cuda_rolling_kernal(
             cuda.Out(dest_x), 
             cuda.Out(dest_y), 
@@ -73,25 +83,48 @@ class Roller(BaseProcessUnit):
             np.int32(np.prod(x.shape[1:])),
             cuda.In(target_dim),
             np.int32(target_dim_length),
+            np.int32(step_x),
+            np.int32(step_y),
             block=(LIMIT_THREAD_PER_BLOCK,1,1),
             grid=(math.ceil(x.shape[0]/LIMIT_THREAD_PER_BLOCK),1)
         )
         return dest_x, dest_y
 
-    def forward(self, x, backend="cpu", target_dim=None):
-        if backend == "cpu":
+    def forward(self, x, target_dim=None, **config):
+        x = x.astype(np.float32)
+        if self.config["backend"] == "cpu":
             return self._rolling(x, target_dim=target_dim)
-        if backend == "cuda":
+        if self.config["backend"] == "cuda":
             return self._cuda_rolling(x, target_dim=target_dim)
+    
+    def backward(self, x, **config):
+        return x
 
 if __name__ == "__main__":
-    x = np.random.rand(70000, 3).astype(np.float32)
-    roller = Roller(lookback=320, horizon=2)
+    x = pd.DataFrame({"value1": np.random.randn(5).astype(np.float32),
+                      "value2": np.random.randn(5).astype(np.float32)})
+    x = np.stack((x[x.columns[i]].to_numpy() for i in range(len(x.columns))), axis=1)
+    roller = Roller(lookback=4, horizon=1, backend="cuda")
     start_time = time.time()
-    out_x, out_y = roller.forward(x, backend="cuda", target_dim=[0,2])
+    out_x, out_y = roller.forward(x, target_dim=None)
     print("It takes {} seconds for gpu".format(time.time() - start_time))
+    roller = Roller(lookback=4, horizon=1, backend="cpu")
     start_time = time.time()
-    out_x_cpu, out_y_cpu = roller.forward(x, backend="cpu", target_dim=[0,2])
+    out_x_cpu, out_y_cpu = roller.forward(x, target_dim=None)
     print("It takes {} seconds for cpu".format(time.time() - start_time))
     np.testing.assert_almost_equal(out_x, out_x_cpu)
     np.testing.assert_almost_equal(out_y, out_y_cpu)
+
+    x = np.random.rand(50, 2).astype(np.float32)
+    roller = Roller(lookback=40, horizon=1, backend="cuda")
+    start_time = time.time()
+    out_x, out_y = roller.forward(x, target_dim=None)
+    print("It takes {} seconds for gpu".format(time.time() - start_time))
+    roller = Roller(lookback=40, horizon=1, backend="cpu")
+    start_time = time.time()
+    out_x_cpu, out_y_cpu = roller.forward(x, target_dim=None)
+    print("It takes {} seconds for cpu".format(time.time() - start_time))
+    np.testing.assert_almost_equal(out_x, out_x_cpu)
+    np.testing.assert_almost_equal(out_y, out_y_cpu)
+
+    
