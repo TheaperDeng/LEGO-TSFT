@@ -5,10 +5,6 @@ from legotsft import BaseProcessUnit
 import numpy as np
 import pandas as pd
 
-import pycuda.autoinit
-import pycuda.driver as cuda
-from pycuda.compiler import SourceModule
-
 import time
 import math
 
@@ -28,32 +24,38 @@ class Roller(BaseProcessUnit):
         self._post_processing = False
         self._input_layer = False
 
-        mod = SourceModule("""
-            __global__ void cuda_rolling(float *dest_x, float *dest_y, float *x, int lookback, int horizon, int length, int overset, int* target_dim, int target_dim_length, int step_x, int step_y)
-            {
-                int block_idx = blockIdx.x;
-                int idx = threadIdx.x + block_idx*blockDim.x;
-                int idx_x = idx * lookback * overset;
-                int idx_y = idx * horizon * target_dim_length;
-                
-                if (idx+lookback+horizon-1 >= length){
-                    return;
-                }
+        try:
+            import pycuda.autoinit
+            import pycuda.driver as cuda
+            from pycuda.compiler import SourceModule
+            mod = SourceModule("""
+                __global__ void cuda_rolling(float *dest_x, float *dest_y, float *x, int lookback, int horizon, int length, int overset, int* target_dim, int target_dim_length, int step_x, int step_y)
+                {
+                    int block_idx = blockIdx.x;
+                    int idx = threadIdx.x + block_idx*blockDim.x;
+                    int idx_x = idx * lookback * overset;
+                    int idx_y = idx * horizon * target_dim_length;
+                    
+                    if (idx+lookback+horizon-1 >= length){
+                        return;
+                    }
 
-                // dest_x
-                for (int i=0; i<=(lookback-1)*overset; i+=overset){
-                    memcpy(&dest_x[idx_x+i], &x[idx*overset + i], sizeof(float)*overset);
-                }
+                    // dest_x
+                    for (int i=0; i<=(lookback-1)*overset; i+=overset){
+                        memcpy(&dest_x[idx_x+i], &x[idx*overset + i], sizeof(float)*overset);
+                    }
 
-                // dest_y
-                for (int i=0; i<=(horizon-1); i+=1){
-                    for (int j=0; j<target_dim_length; j++){
-                        memcpy(&dest_y[idx_y+i*target_dim_length+j], &x[idx*overset+i*overset+lookback*overset+target_dim[j]], sizeof(float));
+                    // dest_y
+                    for (int i=0; i<=(horizon-1); i+=1){
+                        for (int j=0; j<target_dim_length; j++){
+                            memcpy(&dest_y[idx_y+i*target_dim_length+j], &x[idx*overset+i*overset+lookback*overset+target_dim[j]], sizeof(float));
+                        }
                     }
                 }
-            }
-        """)
-        self._cuda_rolling_kernal = mod.get_function("cuda_rolling")
+            """)
+            self._cuda_rolling_kernal = mod.get_function("cuda_rolling")
+        except:
+            print("You should install pycuda to use a cuda backend. You can still use cpu backend")
     
     def _rolling(self, x, target_dim=None):
         target_dim = target_dim if target_dim else list(range(0,x.shape[1]))
@@ -65,6 +67,9 @@ class Roller(BaseProcessUnit):
         return out_x, out_y
 
     def _cuda_rolling(self, x, target_dim=None):
+        import pycuda.autoinit
+        import pycuda.driver as cuda
+        from pycuda.compiler import SourceModule
         target_dim = target_dim if target_dim else list(range(0,x.shape[1]))
         target_dim_length = len(target_dim)
         dest_x = np.zeros((x.shape[0]-self.config["lookback"]-self.config["horizon"]+1,self.config["lookback"]) + tuple([x.shape[1]])).astype(np.float32)
@@ -95,6 +100,11 @@ class Roller(BaseProcessUnit):
         if self.config["backend"] == "cpu":
             return self._rolling(x, target_dim=target_dim)
         if self.config["backend"] == "cuda":
+            try:
+                self._cuda_rolling_kernal
+            except:
+                print("You should install pycuda to use a cuda backend. You can still use cpu backend")
+                return
             return self._cuda_rolling(x, target_dim=target_dim)
     
     def backward(self, x, **config):

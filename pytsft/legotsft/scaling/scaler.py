@@ -7,10 +7,6 @@ import numpy as np
 import time
 import pandas as pd
 
-import pycuda.autoinit
-import pycuda.driver as cuda
-from pycuda.compiler import SourceModule
-
 
 class StdScaler(BaseProcessUnit):
     def __init__(self, **config):
